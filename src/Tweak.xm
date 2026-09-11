@@ -37,15 +37,17 @@ static void btSetDouble(NSString *key, double val) {
     [d synchronize];   // 立即落盘，防进程被杀丢失拖动后的位置
 }
 
-#pragma mark - IOKit 前向声明（运行时符号由系统提供，走 -undefined,dynamic_lookup）
+#pragma mark - IOKit 前向声明（Objective-C++ 下必须 extern "C"，否则 C++ 名字修饰无法匹配 IOKit 的 C 符号）
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
 typedef io_object_t io_registry_entry_t;
 
+extern "C" {
 CFMutableDictionaryRef IOServiceMatching(const char *name);
 io_service_t IOServiceGetMatchingService(mach_port_t masterPort, CFDictionaryRef matching);
 CFTypeRef IORegistryEntryCreateCFProperty(io_registry_entry_t entry, CFStringRef key, CFAllocatorRef allocator, uint32_t options);
 kern_return_t IOObjectRelease(io_object_t object);
+}
 
 static int64_t bt_bs_int(NSString *key) {
     io_service_t svc = IOServiceGetMatchingService(MACH_PORT_NULL, IOServiceMatching("AppleSmartBattery"));

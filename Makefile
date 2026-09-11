@@ -14,7 +14,6 @@ TWEAK_NAME = BatteryTemp
 BatteryTemp_FILES = src/Tweak.xm
 BatteryTemp_CFLAGS = -fobjc-arc -fobjc-exceptions -Wno-deprecated-declarations -w
 BatteryTemp_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics IOKit
-BatteryTemp_LDFLAGS = -undefined,dynamic_lookup
 
 # ===== 设置面板 PreferenceBundle =====
 BUNDLE_NAME = BatteryTempPrefs
