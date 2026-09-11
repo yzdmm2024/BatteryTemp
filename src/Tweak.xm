@@ -175,6 +175,7 @@ static void bt_position(void) {
 }
 
 static void bt_tick(void) {
+    @try {
     if (!btBool(kEnabled, YES)) {
         if (gLabel) { [gLabel removeFromSuperview]; gLabel = nil; }
         return;
@@ -202,6 +203,9 @@ static void bt_tick(void) {
         [gHost bringSubviewToFront:gLabel];
     }
     if (gLabel) bt_position();
+    } @catch (NSException *e) {
+        NSLog(@"[电池温度] tick 异常: %@", e);
+    }
 }
 
 static void bt_startTimer(void) {
@@ -240,7 +244,12 @@ static void btInit(void) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         btChangedNotifyCallback, kChangedCFName, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        bt_startTimer();   // 注入立即启动自愈定时器，状态栏一出现就吸附，切换时无延迟
+        // 关键：不能直接在这里同步跑 bt_tick / UIKit。进程刚被注入，主 run loop / 主界面
+        // 尚未就绪，过早访问 UI 会把 SpringBoard/App 直接崩掉(表现=完全不显示)。
+        // 延迟 0.5s 等主 run loop 起来后再启动自愈定时器，最稳。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            bt_startTimer();
+        });
     }
     NSLog(@"[电池温度] dylib 注入 UI 进程 (iOS16 / rootless / 状态栏电池下常驻透明小字, 贯穿显示)");
 }
