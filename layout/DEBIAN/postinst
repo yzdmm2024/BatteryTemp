@@ -1,0 +1,4 @@
+#!/bin/bash
+# 安装后回源重启，让预告设置入口 + tweak(dylib) 重新加载（rootless 下自有）
+killall -9 SpringBoard 2>/dev/null || true
+exit 0
