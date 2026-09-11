@@ -12,7 +12,7 @@
 			<key>label</key>
 			<string>显示</string>
 			<key>footerText</key>
-			<string>在「设置 → 电池」页面显示实时电池温度（°C）、电压、循环次数，每 3 秒刷新。换过第三方电池、系统隐藏温度时也能看真实读数。</string>
+			<string>在桌面/锁屏状态栏的电池图标正下方，显示实时的电池温度（°C）与电压（V），每 3 秒刷新。换过电池、系统隐藏温度时也能看真实读数。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -30,45 +30,81 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>位置</string>
+			<string>实时调节</string>
 			<key>footerText</key>
-			<string>默认位置：电池正下方（顶部）或页面底部。进入电池页面后，可以用手指直接拖动温度文字到任意位置，松手自动保存。</string>
+			<string>改动即时生效，回到桌面即可看到效果。用 - / + 微调显示位置与大小。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSMultiValueCell</string>
-			<key>default</key>
-			<integer>0</integer>
+			<string>PSStepperCell</string>
 			<key>defaults</key>
 			<string>com.yzdmm.batterytemp</string>
 			<key>key</key>
-			<string>anchor</string>
+			<string>vGap</string>
 			<key>label</key>
-			<string>默认位置</string>
-			<key>validValues</key>
-			<array>
-				<integer>0</integer>
-				<integer>1</integer>
-			</array>
-			<key>validTitles</key>
-			<array>
-				<string>电池正下方</string>
-				<string>页面底部</string>
-			</array>
+			<string>温度 高度</string>
+			<key>default</key>
+			<real>8</real>
+			<key>min</key>
+			<real>0</real>
+			<key>max</key>
+			<real>40</real>
+			<key>step</key>
+			<real>1</real>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSGroupCell</string>
+			<string>PSStepperCell</string>
+			<key>defaults</key>
+			<string>com.yzdmm.batterytemp</string>
+			<key>key</key>
+			<string>hOffset</string>
 			<key>label</key>
-			<string>操作</string>
+			<string>温度 左右</string>
+			<key>default</key>
+			<real>0</real>
+			<key>min</key>
+			<real>-80</real>
+			<key>max</key>
+			<real>80</real>
+			<key>step</key>
+			<real>1</real>
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSButtonCell</string>
+			<string>PSStepperCell</string>
+			<key>defaults</key>
+			<string>com.yzdmm.batterytemp</string>
+			<key>key</key>
+			<string>vOffset</string>
 			<key>label</key>
-			<string>重置到电池正下方</string>
-			<key>action</key>
-			<string>resetPosition</string>
+			<string>温度 上下</string>
+			<key>default</key>
+			<real>0</real>
+			<key>min</key>
+			<real>-20</real>
+			<key>max</key>
+			<real>80</real>
+			<key>step</key>
+			<real>1</real>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSStepperCell</string>
+			<key>defaults</key>
+			<string>com.yzdmm.batterytemp</string>
+			<key>key</key>
+			<string>fontSize</string>
+			<key>label</key>
+			<string>温度 大小</string>
+			<key>default</key>
+			<real>13</real>
+			<key>min</key>
+			<real>8</real>
+			<key>max</key>
+			<real>40</real>
+			<key>step</key>
+			<real>1</real>
 		</dict>
 	</array>
 </dict>

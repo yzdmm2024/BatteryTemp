@@ -1,13 +1,12 @@
-// 电池温度 BatteryTemp — 在「设置 → 电池」页面显示实时电池温度/电压/循环次数
+// 电池温度 BatteryTemp —— 桌面/状态栏电池图标正下方显示 温度(°C)+电压(V)
 // 适配：iPhone 12 Pro / iOS 16.x / rootless (relaxin・Dopamine) / ElleKit TweakInject
-// 关键修复：
-//   1) iOS 16 设置电池页的真实控制器类是 BatteryUIController（BatteryUIDetailController 不存在），
-//      且它位于惰性加载的 BatteryUsageUI.bundle 内 —— 必须在 bundle 加载后再 %init 才挂得上。
-//   2) 标签可拖动：在电池页用手指拖动温度文字到任意位置，松手自动保存百分比坐标。
-//   3) 提供「设置 → 电池温度」面板（开关 / 默认位置 / 重置），改动实时生效。
-// 温度数据来源：IOKit 注册表 AppleSmartBattery 的 Temperature（0.1K）实际电芯内部温度。
+// 注入 com.apple.springboard：挂钩状态栏电池视图 _UIStatusBarBatteryItemView，
+// 在其正下方叠加一个小标签，仅显示「25.8°C  4.07V」；去掉文字与循环次数。
+// 位置/字号可在「设置 → 电池温度」面板用 - / + 实时调节（高度/左右/上下/大小）。
+// 温度数据：IOKit 注册表 AppleSmartBattery.Temperature(0.1K) / Voltage(mV)。
 
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <notify.h>
@@ -16,10 +15,12 @@
 #pragma mark - 偏好（与设置面板共享同一 suite）
 static NSString *const PS_DOMAIN = @"com.yzdmm.batterytemp";
 static NSString *const kEnabled  = @"enabled";    // 开关，默认开
-static NSString *const kAnchor   = @"anchor";     // 0=电池正下方(默认) 1=页面底部
-static NSString *const kCenterX  = @"centerX";    // 拖动后保存的相对横坐标 0..1
-static NSString *const kCenterY  = @"centerY";    // 相对纵坐标 0..1
-static NSString *const kChanged  = @"com.yzdmm.batterytemp.changed";
+static NSString *const kVGap     = @"vGap";       // 高度：距电池图标下沿的间距
+static NSString *const kHOffset  = @"hOffset";    // 左右：水平偏移（+右 -左）
+static NSString *const kVOffset  = @"vOffset";    // 上下：垂直额外偏移（+下 -上）
+static NSString *const kFontSize = @"fontSize";   // 大小：文字字号
+
+static const char kChangedName[] = "com.yzdmm.batterytemp.changed";
 
 static BOOL btBool(NSString *key, BOOL def) {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:PS_DOMAIN];
@@ -31,13 +32,8 @@ static double btDouble(NSString *key, double def) {
     id v = [d objectForKey:key];
     return v ? [v doubleValue] : def;
 }
-static void btSetDouble(NSString *key, double val) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:PS_DOMAIN];
-    [d setDouble:val forKey:key];
-    [d synchronize];   // 立即落盘，防进程被杀丢失拖动后的位置
-}
 
-#pragma mark - IOKit 前向声明（Objective-C++ 下必须 extern "C"，否则 C++ 名字修饰无法匹配 IOKit 的 C 符号）
+#pragma mark - IOKit 前向声明（Objective-C++ 下必须 extern "C"）
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
 typedef io_object_t io_registry_entry_t;
@@ -64,203 +60,201 @@ static int64_t bt_bs_int(NSString *key) {
     return v;
 }
 
+#pragma mark - 标签管理与定位
+static NSMutableArray *gLabels = nil;      // 已附加到状态栏电池下方的 UILabel（weak）
+static int gTimerStarted = 0;
+static void bt_startTimer_L(void);         // 前向声明：下文中定义
+
 static double bt_bs_temp_c(void) {
     int64_t raw = bt_bs_int(@"Temperature");
     if (raw <= 0) return -1;
     return (raw / 10.0) - 273.15;
 }
 
-#pragma mark - 关联对象键
-static const void *kLabelKey = &kLabelKey;
-static const void *kTimerKey = &kTimerKey;
-
-static void bt_layOut(UILabel *label, UIView *host) {
-    double cx = btDouble(kCenterX, 0.5);
-    double cy = btDouble(kCenterY, -1);
-    if (cy < 0)   // 尚未手动拖动过 → 用“默认位置”锚点
-        cy = (btDouble(kAnchor, 0) < 1) ? 0.20 : 0.88;
-    CGFloat w = host.bounds.size.width;
-    CGFloat h = host.bounds.size.height;
-    if (w <= 0 || h <= 0) return;
-    CGFloat px = MIN(MAX((CGFloat)cx, 0.05), 0.95) * w;
-    CGFloat py = MIN(MAX((CGFloat)cy, 0.05), 0.95) * h;
-    label.center = CGPointMake(px, py);
-}
-
-static void bt_refreshTemp(id host) {
-    UILabel *label = objc_getAssociatedObject(host, kLabelKey);
-    if (!label) return;
+static NSString *bt_composeText(void) {
     double c = bt_bs_temp_c();
     int64_t volt = bt_bs_int(@"Voltage");
-    int64_t cyc  = bt_bs_int(@"CycleCount");
-    NSMutableString *s = [NSMutableString stringWithFormat:@"电池温度: %.1f°C", c];
-    if (volt > 0) [s appendFormat:@"   ·   电压 %.2fV", volt / 1000.0];
-    if (cyc  > 0) [s appendFormat:@"   ·   循环 %lld", (long long)cyc];
-    label.text = s;
-    [label sizeToFit];
-    bt_layOut(label, [host view]);   // 文字变宽/变窄后保持中心点不漂
+    NSMutableString *s = [NSMutableString string];
+    if (c >= 0) [s appendFormat:@"%.1f°C", c]; else [s appendString:@"--"];
+    if (volt > 0) { [s appendString:@"  "]; [s appendFormat:@"%.2fV", volt / 1000.0]; }
+    return s.length ? s : @"--";
 }
 
-static void bt_onDrag(UIPanGestureRecognizer *pan, UIViewController *vc) {
-    UILabel *label = objc_getAssociatedObject(vc, kLabelKey);
-    UIView *host = vc.view;
-    if (!label || !host) return;
-    CGPoint t = [pan translationInView:host];
-    CGPoint c = CGPointMake(label.center.x + t.x, label.center.y + t.y);
-    CGFloat w = MAX(host.bounds.size.width, 1);
-    CGFloat h = MAX(host.bounds.size.height, 1);
-    c.x = MIN(MAX(c.x, 0.05 * w), 0.95 * w);
-    c.y = MIN(MAX(c.y, 0.05 * h), 0.95 * h);
-    label.center = c;
-    [pan setTranslation:CGPointZero inView:host];
-    if (pan.state == UIGestureRecognizerStateEnded ||
-        pan.state == UIGestureRecognizerStateCancelled) {
-        btSetDouble(kCenterX, label.center.x / w);
-        btSetDouble(kCenterY, label.center.y / h);
+static void bt_positionLabel(UILabel *label, UIView *batView) {
+    double size = btDouble(kFontSize, 13);
+    if (size < 8) size = 8;
+    label.font = [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightMedium];
+    [label sizeToFit];
+
+    UIView *host = [batView superview];
+    if (!host) return;
+    CGRect f = [batView frame];
+    CGFloat gap = (CGFloat)btDouble(kVGap, 8) + (CGFloat)btDouble(kVOffset, 0);
+    CGFloat cx = f.origin.x + f.size.width * 0.5 + (CGFloat)btDouble(kHOffset, 0);
+    CGSize ls = label.bounds.size;
+    CGPoint center = CGPointMake(cx, f.origin.y + f.size.height + gap + ls.height * 0.5);
+    label.center = center;
+
+    // 不让标签跑出屏幕左右边缘
+    CGFloat sw = host.bounds.size.width;
+    if (sw > 0) {
+        CGRect nf = label.frame;
+        CGFloat maxX = sw - ls.width - 4;
+        if (maxX < 4) maxX = 4;
+        nf.origin.x = MIN(MAX(nf.origin.x, 4), maxX);
+        label.frame = nf;
     }
 }
 
-static void bt_removeLabel(UIViewController *vc) {
-    NSTimer *timer = objc_getAssociatedObject(vc, kTimerKey);
-    UILabel *label  = objc_getAssociatedObject(vc, kLabelKey);
-    if (timer) { [timer invalidate]; objc_setAssociatedObject(vc, kTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-    if (label) { [label removeFromSuperview]; objc_setAssociatedObject(vc, kLabelKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-}
-
-static void bt_ensureTempLabel(id self) {
-    if (!btBool(kEnabled, YES)) return;          // 面板开关关闭 → 什么都不加
-    UIViewController *vc = (UIViewController *)self;
-    if (objc_getAssociatedObject(vc, kLabelKey)) return;
-
-    UILabel *label = [[UILabel alloc] init];
-    label.text = @"电池温度: 读取中…";
-    label.textAlignment = NSTextAlignmentCenter;
-    label.textColor = [UIColor whiteColor];
-    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-    label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.38];   // 深色半透明圆角底，拖动更醒目
-    label.layer.cornerRadius = 8.0;
-    label.layer.masksToBounds = YES;
-    label.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
-    label.layer.borderWidth = 0.5;
-    label.userInteractionEnabled = YES;
-    [label sizeToFit];
-    [vc.view addSubview:label];
-    bt_layOut(label, vc.view);
-
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:vc action:@selector(btHandleDrag:)];
-    [label addGestureRecognizer:pan];
-
-    objc_setAssociatedObject(vc, kLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (!objc_getAssociatedObject(vc, kTimerKey)) {
-        __weak UIViewController *weakVC = vc;
-        NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *t){
-            if (weakVC) bt_refreshTemp(weakVC);
-        }];
-        objc_setAssociatedObject(vc, kTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+static void bt_applyForView(id batView) {
+    if (!batView) return;
+    UIView *v = (UIView *)batView;
+    // 电池视图已不在屏幕上 → 移除标签
+    if (![v window]) {
+        UILabel *old = objc_getAssociatedObject(v, @selector(btTag));
+        if (old) { [old removeFromSuperview]; objc_setAssociatedObject(v, @selector(btTag), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); [gLabels removeObject:old]; }
+        return;
     }
-    bt_refreshTemp(vc);
+    if (!btBool(kEnabled, YES)) {
+        UILabel *old = objc_getAssociatedObject(v, @selector(btTag));
+        if (old) { [old removeFromSuperview]; objc_setAssociatedObject(v, @selector(btTag), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); [gLabels removeObject:old]; }
+        return;
+    }
+    UIView *host = [v superview];
+    if (!host) return;
+
+    if (!gLabels) gLabels = [[NSMutableArray alloc] init];
+
+    UILabel *label = objc_getAssociatedObject(v, @selector(btTag));
+    if (!label) {
+        label = [[UILabel alloc] init];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.textColor = [UIColor whiteColor];
+        label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
+        label.layer.cornerRadius = 6.0;
+        label.layer.masksToBounds = YES;
+        label.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+        label.layer.borderWidth = 0.5;
+        label.userInteractionEnabled = NO;
+        [host addSubview:label];
+        objc_setAssociatedObject(v, @selector(btTag), label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(label, @selector(btBat), v, OBJC_ASSOCIATION_ASSIGN);
+        if (![gLabels containsObject:label]) [gLabels addObject:label];
+    }
+    label.text = bt_composeText();
+    bt_positionLabel(label, v);
+    bt_startTimer_L();
 }
 
-static void btApplyForVC(id self) {
-    UIViewController *vc = (UIViewController *)self;
+static void bt_layOutAll(void) {
+    // 遍历已附加的标签：重构 text 并重新定位（通知回调 / 定时器入口）
+    for (UILabel *l in [gLabels copy]) {
+        id bat = objc_getAssociatedObject(l, @selector(btBat));
+        if (bat) {
+            if (![bat window]) continue;
+            [(UILabel *)l setText:bt_composeText()];
+            bt_positionLabel(l, bat);
+        }
+    }
+}
+
+static void bt_applyAll(void) {
     if (btBool(kEnabled, YES)) {
-        bt_ensureTempLabel(vc);          // 没有就创建（含拖动手势+定时器）
-        bt_refreshTemp(vc);              // 已存在则重排位置/刷新文字（含有效的 bounds）
-    } else bt_removeLabel(vc);
-}
-
-#pragma mark - Runtime 挂钩（替代 Logos %group：BatteryUIController 在 BatteryUsageUI.bundle 惰性加载，
-// 必须等 bundle 加载后手动 swizzle。Logos 的 %init 不允许在 C 函数/GCD 块里调用，故用原生 runtime。）
-static IMP bt_orig_viewDidLoad = NULL;
-static void bt_viewDidLoad(id self, SEL _cmd) {
-    if (bt_orig_viewDidLoad)
-        ((void (*)(id, SEL))bt_orig_viewDidLoad)(self, _cmd);
-    if (@available(iOS 13.0, *)) {
-        bt_ensureTempLabel(self);
+        bt_layOutAll();
+        bt_startTimer_L();
+    } else {
+        for (UILabel *l in [gLabels copy]) { [l removeFromSuperview]; }
+        [gLabels removeAllObjects];
     }
 }
 
-static IMP bt_orig_viewWillAppear = NULL;
-static void bt_viewWillAppear(id self, SEL _cmd, BOOL animated) {
-    if (bt_orig_viewWillAppear)
-        ((void (*)(id, SEL, BOOL))bt_orig_viewWillAppear)(self, _cmd, animated);
-    btApplyForVC(self);   // 每次进入页面：按开关增/删，位置读默认锚点或上次拖动结果
+#pragma mark - 全局刷新定时器（每 3 秒更新数据与位置）
+__attribute__((noinline)) static void bt_startTimer_L(void) {
+    if (gTimerStarted) return;
+    gTimerStarted = 1;
+    [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *t){
+        if (!btBool(kEnabled, YES)) return;
+        if (gLabels.count == 0) return;
+        bt_layOutAll();
+    }];
 }
 
-// 布局阶段再定位：viewDidLoad 里 bounds 常为 0(0,0)，label 会被 bt_layOut 早期 return 卡在左上角。
-// viewDidLayoutSubviews 每次拿到有效尺寸，确保温度条立刻显示在正确位置（旋转/首次布局都覆盖）。
-static IMP bt_orig_DidLayout = NULL;
-static void bt_viewDidLayoutSubviews(id self, SEL _cmd) {
-    if (bt_orig_DidLayout)
-        ((void (*)(id, SEL))bt_orig_DidLayout)(self, _cmd);
-    btApplyForVC(self);
+#pragma mark - 扫描状态栏找到电池视图
+static Class bt_batteryClass(void) {
+    Class c = objc_getClass("_UIStatusBarBatteryItemView");
+    if (c) return c;
+    return objc_getClass("UIStatusBarBatteryItemView");
 }
 
-static IMP bt_orig_DidAppear = NULL;
-static void bt_viewDidAppear(id self, SEL _cmd, BOOL animated) {
-    if (bt_orig_DidAppear)
-        ((void (*)(id, SEL, BOOL))bt_orig_DidAppear)(self, _cmd, animated);
-    btApplyForVC(self);
+static void bt_scanRecursive(UIView *view) {
+    if (!view) return;
+    Class bc = bt_batteryClass();
+    if (bc && [view isKindOfClass:bc]) bt_applyForView(view);
+    for (UIView *sv in view.subviews) bt_scanRecursive(sv);
 }
 
-static void bt_handleDrag(id self, SEL _cmd, UIPanGestureRecognizer *pan) {
-    bt_onDrag(pan, self);
+#pragma mark - Runtime 挂钩（替代 Logos；用原生 runtime swizzle）
+static IMP bt_orig_layout = NULL;
+static void bt_batteryLayoutSubviews(id self, SEL _cmd) {
+    if (![self isKindOfClass:bt_batteryClass()]) {   // 若方法继承自 UIView，仅对电池视图处理
+        if (bt_orig_layout) ((void (*)(id, SEL))bt_orig_layout)(self, _cmd);
+        return;
+    }
+    if (bt_orig_layout)
+        ((void (*)(id, SEL))bt_orig_layout)(self, _cmd);
+    bt_applyForView(self);
 }
 
-static void bt_realHook(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class cls = objc_getClass("BatteryUIController");
-        if (!cls) return;
-
-        // %new：补上拖动手势方法（原类没有 → class_addMethod）
-        class_addMethod(cls, sel_registerName("btHandleDrag:"), (IMP)bt_handleDrag, "v@:@");
-
-        // 替换 viewDidLoad / viewWillAppear:
-        Method m1 = class_getInstanceMethod(cls, @selector(viewDidLoad));
-        if (m1) { bt_orig_viewDidLoad = method_getImplementation(m1); method_setImplementation(m1, (IMP)bt_viewDidLoad); }
-        Method m2 = class_getInstanceMethod(cls, @selector(viewWillAppear:));
-        if (m2) { bt_orig_viewWillAppear = method_getImplementation(m2); method_setImplementation(m2, (IMP)bt_viewWillAppear); }
-        // 布局/出现后再定位（修复 viewDidLoad 时 bounds=0 导致 label 卡左上角的问题）
-        Method m3 = class_getInstanceMethod(cls, @selector(viewDidLayoutSubviews));
-        if (m3) { bt_orig_DidLayout = method_getImplementation(m3); method_setImplementation(m3, (IMP)bt_viewDidLayoutSubviews); }
-        Method m4 = class_getInstanceMethod(cls, @selector(viewDidAppear:));
-        if (m4) { bt_orig_DidAppear = method_getImplementation(m4); method_setImplementation(m4, (IMP)bt_viewDidAppear); }
-
-        NSLog(@"[电池温度] 已挂钩 BatteryUIController (runtime swizzle)");
-    });
+static IMP bt_orig_sbDidMove = NULL;
+static void bt_statusBarDidMoveToWindow(id self, SEL _cmd) {
+    Class sc = objc_getClass("_UIStatusBar");
+    if (sc && ![self isKindOfClass:sc]) {            // 同样只在状态栏实例上扫描
+        if (bt_orig_sbDidMove) ((void (*)(id, SEL))bt_orig_sbDidMove)(self, _cmd);
+        return;
+    }
+    if (bt_orig_sbDidMove)
+        ((void (*)(id, SEL))bt_orig_sbDidMove)(self, _cmd);
+    bt_scanRecursive(self);
 }
 
-static void btTryHook(void) {
-    if (objc_getClass("BatteryUIController")) bt_realHook();
+// 只 swizzle 一次：反复 method_setImplementation 会把原实现覆盖成自己造成递归
+static int gSwizzled = 0;
+static void bt_hookSwizzleOnce(void) {
+    if (gSwizzled) return;
+    Class bc = bt_batteryClass();
+    Class sc = objc_getClass("_UIStatusBar");
+    if (!bc || !sc) return;
+    Method m = class_getInstanceMethod(bc, @selector(layoutSubviews));
+    if (m) { bt_orig_layout = method_getImplementation(m); method_setImplementation(m, (IMP)bt_batteryLayoutSubviews); }
+    Method m2 = class_getInstanceMethod(sc, @selector(didMoveToWindow));
+    if (m2) { bt_orig_sbDidMove = method_getImplementation(m2); method_setImplementation(m2, (IMP)bt_statusBarDidMoveToWindow); }
+    gSwizzled = 1;
+}
+
+static void bt_hookIfPossible(void) {
+    bt_hookSwizzleOnce();
+    // 现有状态栏直接扫一遍，把已经建好的电池视图也挂上
+    if (gLabels == nil) gLabels = [[NSMutableArray alloc] init];
+    for (UIWindow *w in [[UIApplication sharedApplication] windows]) bt_scanRecursive(w);
 }
 
 #pragma mark - 构造函数
-static void btBundleLoaded(CFNotificationCenterRef __unused center,
-                           void * __unused obs,
-                           CFStringRef __unused name,
-                           const void * __unused object,
-                           CFDictionaryRef __unused userInfo) {
-    btTryHook();
+static void btChangedCallback(int token) {
+    dispatch_async(dispatch_get_main_queue(), ^{ bt_applyAll(); });
 }
 
 __attribute__((constructor))
 static void btInit(void) {
     @autoreleasepool {
-        // 1) BatteryUIController 在 BatteryUsageUI.bundle 惰性加载 → 监听它加载后再挂钩
-        NSBundle *bundle = [NSBundle bundleWithPath:@"/System/Library/PreferenceBundles/BatteryUsageUI.bundle"];
-        if (bundle) {
-            CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
-                                            btBundleLoaded, CFSTR("NSBundleDidLoadNotification"),
-                                            (__bridge CFBundleRef)bundle,
-                                            CFNotificationSuspensionBehaviorDeliverImmediately);
-        }
-        // 2) 兜底：延迟轮询几次（bundle 若已被缓存/别的 bundle 覆盖）
-        for (int i = 1; i <= 5; i++) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                btTryHook();
+        notify_register_dispatch(kChangedName, &(int){0}, dispatch_get_main_queue(), ^(int token){
+            btChangedCallback(token);
+        });
+        // 轮询挂载：SpringBoard 启动后状态栏/电池视图逐步创建
+        for (int i = 1; i <= 20; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                bt_hookIfPossible();
             });
         }
     }
-    NSLog(@"[电池温度] dylib 已加载 (iOS16 / rootless / BatteryUIController)");
+    NSLog(@"[电池温度] dylib 已注入 SpringBoard (iOS16 / rootless / 状态栏电池下方)");
 }

@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
 	<key>Module</key>
-	<string>PreferenceLoader</string>
+	<string>SpringBoard</string>
 	<key>Filter</key>
 	<dict>
 		<key>Bundles</key>
 		<array>
-			<string>com.apple.Preferences</string>
+			<string>com.apple.springboard</string>
 		</array>
 	</dict>
 </dict>
