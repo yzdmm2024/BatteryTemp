@@ -1,9 +1,9 @@
 // 电池温度 BatteryTemp —— 桌面/状态栏电池图标正下方显示 温度(°C)+电压(V)
 // 适配：iPhone 12 Pro / iOS 16.x / rootless (relaxin・Dopamine) / ElleKit TweakInject
-// 注入 com.apple.springboard：挂钩状态栏电池视图 _UIStatusBarBatteryItemView，
-// 在其正下方叠加一个小标签，仅显示「25.8°C  4.07V」；去掉文字与循环次数。
-// 位置/字号可在「设置 → 电池温度」面板用 - / + 实时调节（高度/左右/上下/大小）。
-// 温度数据：IOKit 注册表 AppleSmartBattery.Temperature(0.1K) / Voltage(mV)。
+// 注入 com.apple.springboard。不依赖具体的电池私有类名：
+//   轮询扫描状态栏找到电池视图(类名含 BatteryView/BatteryItemView)做锚点，
+//   找不到就回退到右上角默认位置，保证温度电压一定显示。
+// 标签直接加在 SpringBoard 主窗口上（不受状态栏裁剪），位置/字号由设置面板调节。
 
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -12,22 +12,21 @@
 #import <mach/mach_port.h>
 
 #pragma mark - 偏好（与设置面板共享同一 suite）
-static NSString *const PS_DOMAIN = @"com.yzdmm.batterytemp";
-static NSString *const kEnabled  = @"enabled";    // 开关，默认开
-static NSString *const kVGap     = @"vGap";       // 高度：距电池图标下沿的间距
-static NSString *const kHOffset  = @"hOffset";    // 左右：水平偏移（+右 -左）
-static NSString *const kVOffset  = @"vOffset";    // 上下：垂直额外偏移（+下 -上）
-static NSString *const kFontSize = @"fontSize";   // 大小：文字字号
+static NSString *const kEnabled  = @"enabled";    // 开关
+static NSString *const kVGap     = @"vGap";       // 高度
+static NSString *const kHOffset  = @"hOffset";    // 左右
+static NSString *const kVOffset  = @"vOffset";    // 上下
+static NSString *const kFontSize = @"fontSize";   // 大小
 
 static CFStringRef kChangedCFName = CFSTR("com.yzdmm.batterytemp.changed");
 
 static BOOL btBool(NSString *key, BOOL def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:PS_DOMAIN];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.yzdmm.batterytemp"];
     id v = [d objectForKey:key];
     return v ? [v boolValue] : def;
 }
 static double btDouble(NSString *key, double def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:PS_DOMAIN];
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.yzdmm.batterytemp"];
     id v = [d objectForKey:key];
     return v ? [v doubleValue] : def;
 }
@@ -59,11 +58,6 @@ static int64_t bt_bs_int(NSString *key) {
     return v;
 }
 
-#pragma mark - 标签管理与定位
-static NSMutableArray *gLabels = nil;      // 已附加到状态栏电池下方的 UILabel（weak）
-static int gTimerStarted = 0;
-static void bt_startTimer_L(void);         // 前向声明：下文中定义
-
 static double bt_bs_temp_c(void) {
     int64_t raw = bt_bs_int(@"Temperature");
     if (raw <= 0) return -1;
@@ -79,185 +73,140 @@ static NSString *bt_composeText(void) {
     return s.length ? s : @"--";
 }
 
-static void bt_positionLabel(UILabel *label, UIView *batView) {
-    double size = btDouble(kFontSize, 13);
-    if (size < 8) size = 8;
-    label.font = [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightMedium];
-    [label sizeToFit];
+#pragma mark - 覆盖层标签
+static UILabel *gLabel = nil;
+static UIView  *gHost  = nil;              // SpringBoard 主窗口（strong）
+static __weak UIView *gBattery = nil;      // 找到的电池视图（weak，不持有）
+static int gTimerStarted = 0;
+static void bt_startTimer(void);
 
-    UIView *host = [batView superview];
-    if (!host) return;
-    CGRect f = [batView frame];
-    CGFloat gap = (CGFloat)btDouble(kVGap, 8) + (CGFloat)btDouble(kVOffset, 0);
-    CGFloat cx = f.origin.x + f.size.width * 0.5 + (CGFloat)btDouble(kHOffset, 0);
-    CGSize ls = label.bounds.size;
-    CGPoint center = CGPointMake(cx, f.origin.y + f.size.height + gap + ls.height * 0.5);
-    label.center = center;
-
-    // 不让标签跑出屏幕左右边缘
-    CGFloat sw = host.bounds.size.width;
-    if (sw > 0) {
-        CGRect nf = label.frame;
-        CGFloat maxX = sw - ls.width - 4;
-        if (maxX < 4) maxX = 4;
-        nf.origin.x = MIN(MAX(nf.origin.x, 4), maxX);
-        label.frame = nf;
+static UIView *bt_findHost(void) {
+    for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+        if (w.rootViewController) return w;
     }
+    return [[[UIApplication sharedApplication] windows] firstObject];
 }
 
-static void bt_applyForView(id batView) {
-    if (!batView) return;
-    UIView *v = (UIView *)batView;
-    // 电池视图已不在屏幕上 → 移除标签
-    if (![v window]) {
-        UILabel *old = objc_getAssociatedObject(v, @selector(btTag));
-        if (old) { [old removeFromSuperview]; objc_setAssociatedObject(v, @selector(btTag), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); [gLabels removeObject:old]; }
-        return;
+static BOOL bt_isBatteryView(UIView *v) {
+    NSString *cn = NSStringFromClass([v class]);
+    if (!cn) return NO;
+    return ([cn containsString:@"BatteryItemView"] || [cn containsString:@"BatteryView"]);
+}
+
+static UIView *bt_scanView(UIView *v) {
+    if (!v) return nil;
+    if (bt_isBatteryView(v)) return v;
+    for (UIView *sv in [v subviews]) {
+        UIView *r = bt_scanView(sv);
+        if (r) return r;
     }
+    return nil;
+}
+
+static CGFloat bt_statusHeight(void) {
+    if (gHost) {
+        UIEdgeInsets ins = gHost.safeAreaInsets;
+        if (ins.top > 0) return ins.top;
+    }
+    return 47;
+}
+
+static void bt_ensureLabel(void) {
+    if (gLabel) return;
+    if (!gHost) gHost = bt_findHost();
+    if (!gHost) return;
+    UILabel *l = [[UILabel alloc] init];
+    l.textAlignment = NSTextAlignmentCenter;
+    l.textColor = [UIColor whiteColor];
+    l.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
+    l.layer.cornerRadius = 6.0;
+    l.layer.masksToBounds = YES;
+    l.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+    l.layer.borderWidth = 0.5;
+    l.layer.zPosition = 1000;
+    l.userInteractionEnabled = NO;
+    [gHost addSubview:l];
+    [gHost bringSubviewToFront:l];
+    gLabel = l;
+}
+
+// 电池在窗口坐标系中的区域；找不到就回退到右上角默认位置
+static CGRect bt_batteryRect(void) {
+    if (gBattery && gHost) {
+        CGRect r = [gBattery convertRect:gBattery.bounds toView:gHost];
+        if (CGRectGetWidth(r) > 0 && CGRectGetHeight(r) > 0) return r;
+    }
+    CGFloat w = [UIScreen mainScreen].bounds.size.width;
+    return CGRectMake(w - 36, bt_statusHeight() * 0.35, 25, 12);
+}
+
+static void bt_position(void) {
+    if (!gLabel) bt_ensureLabel();
+    if (!gLabel || !gHost) return;
+    CGRect r = bt_batteryRect();
+    double size = MAX(btDouble(kFontSize, 13), 8);
+    gLabel.font = [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightMedium];
+    gLabel.text = bt_composeText();
+    [gLabel sizeToFit];
+    CGSize ls = gLabel.bounds.size;
+    CGFloat gap = (CGFloat)btDouble(kVGap, 8);
+    CGFloat off = (CGFloat)btDouble(kVOffset, 0);
+    CGFloat cx = CGRectGetMidX(r) + (CGFloat)btDouble(kHOffset, 0);
+    CGFloat cy = CGRectGetMaxY(r) + gap + off + ls.height * 0.5;
+    CGFloat minCx = ls.width * 0.5;
+    CGFloat maxCx = gHost.bounds.size.width - ls.width * 0.5;
+    if (maxCx < minCx) maxCx = minCx;
+    cx = MIN(MAX(cx, minCx), maxCx);
+    if (cy < 0) cy = 0;
+    gLabel.center = CGPointMake(cx, cy);
+}
+
+static void bt_tick(void) {
     if (!btBool(kEnabled, YES)) {
-        UILabel *old = objc_getAssociatedObject(v, @selector(btTag));
-        if (old) { [old removeFromSuperview]; objc_setAssociatedObject(v, @selector(btTag), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC); [gLabels removeObject:old]; }
+        if (gLabel) { [gLabel removeFromSuperview]; gLabel = nil; }
         return;
     }
-    UIView *host = [v superview];
-    if (!host) return;
-
-    if (!gLabels) gLabels = [[NSMutableArray alloc] init];
-
-    UILabel *label = objc_getAssociatedObject(v, @selector(btTag));
-    if (!label) {
-        label = [[UILabel alloc] init];
-        label.textAlignment = NSTextAlignmentCenter;
-        label.textColor = [UIColor whiteColor];
-        label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
-        label.layer.cornerRadius = 6.0;
-        label.layer.masksToBounds = YES;
-        label.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
-        label.layer.borderWidth = 0.5;
-        label.userInteractionEnabled = NO;
-        [host addSubview:label];
-        objc_setAssociatedObject(v, @selector(btTag), label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(label, @selector(btBat), v, OBJC_ASSOCIATION_ASSIGN);
-        if (![gLabels containsObject:label]) [gLabels addObject:label];
-    }
-    label.text = bt_composeText();
-    bt_positionLabel(label, v);
-    bt_startTimer_L();
+    if (!gHost) gHost = bt_findHost();
+    if (!gBattery && gHost) gBattery = bt_scanView(gHost);
+    bt_ensureLabel();
+    if (gLabel) bt_position();
 }
 
-static void bt_layOutAll(void) {
-    // 遍历已附加的标签：重构 text 并重新定位（通知回调 / 定时器入口）
-    for (UILabel *l in [gLabels copy]) {
-        id bat = objc_getAssociatedObject(l, @selector(btBat));
-        if (bat) {
-            if (![bat window]) continue;
-            [(UILabel *)l setText:bt_composeText()];
-            bt_positionLabel(l, bat);
-        }
-    }
-}
-
-static void bt_applyAll(void) {
-    if (btBool(kEnabled, YES)) {
-        bt_layOutAll();
-        bt_startTimer_L();
-    } else {
-        for (UILabel *l in [gLabels copy]) { [l removeFromSuperview]; }
-        [gLabels removeAllObjects];
-    }
-}
-
-#pragma mark - 全局刷新定时器（每 3 秒更新数据与位置）
-__attribute__((noinline)) static void bt_startTimer_L(void) {
+static void bt_startTimer(void) {
     if (gTimerStarted) return;
     gTimerStarted = 1;
-    [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *t){
-        if (!btBool(kEnabled, YES)) return;
-        if (gLabels.count == 0) return;
-        bt_layOutAll();
+    [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t){
+        dispatch_async(dispatch_get_main_queue(), ^{ bt_tick(); });
     }];
+    bt_tick();
 }
 
-#pragma mark - 扫描状态栏找到电池视图
-static Class bt_batteryClass(void) {
-    Class c = objc_getClass("_UIStatusBarBatteryItemView");
-    if (c) return c;
-    return objc_getClass("UIStatusBarBatteryItemView");
-}
-
-static void bt_scanRecursive(UIView *view) {
-    if (!view) return;
-    Class bc = bt_batteryClass();
-    if (bc && [view isKindOfClass:bc]) bt_applyForView(view);
-    for (UIView *sv in view.subviews) bt_scanRecursive(sv);
-}
-
-#pragma mark - Runtime 挂钩（替代 Logos；用原生 runtime swizzle）
-static IMP bt_orig_layout = NULL;
-static void bt_batteryLayoutSubviews(id self, SEL _cmd) {
-    if (![self isKindOfClass:bt_batteryClass()]) {   // 若方法继承自 UIView，仅对电池视图处理
-        if (bt_orig_layout) ((void (*)(id, SEL))bt_orig_layout)(self, _cmd);
-        return;
-    }
-    if (bt_orig_layout)
-        ((void (*)(id, SEL))bt_orig_layout)(self, _cmd);
-    bt_applyForView(self);
-}
-
-static IMP bt_orig_sbDidMove = NULL;
-static void bt_statusBarDidMoveToWindow(id self, SEL _cmd) {
-    Class sc = objc_getClass("_UIStatusBar");
-    if (sc && ![self isKindOfClass:sc]) {            // 同样只在状态栏实例上扫描
-        if (bt_orig_sbDidMove) ((void (*)(id, SEL))bt_orig_sbDidMove)(self, _cmd);
-        return;
-    }
-    if (bt_orig_sbDidMove)
-        ((void (*)(id, SEL))bt_orig_sbDidMove)(self, _cmd);
-    bt_scanRecursive(self);
-}
-
-// 只 swizzle 一次：反复 method_setImplementation 会把原实现覆盖成自己造成递归
-static int gSwizzled = 0;
-static void bt_hookSwizzleOnce(void) {
-    if (gSwizzled) return;
-    Class bc = bt_batteryClass();
-    Class sc = objc_getClass("_UIStatusBar");
-    if (!bc || !sc) return;
-    Method m = class_getInstanceMethod(bc, @selector(layoutSubviews));
-    if (m) { bt_orig_layout = method_getImplementation(m); method_setImplementation(m, (IMP)bt_batteryLayoutSubviews); }
-    Method m2 = class_getInstanceMethod(sc, @selector(didMoveToWindow));
-    if (m2) { bt_orig_sbDidMove = method_getImplementation(m2); method_setImplementation(m2, (IMP)bt_statusBarDidMoveToWindow); }
-    gSwizzled = 1;
-}
-
-static void bt_hookIfPossible(void) {
-    bt_hookSwizzleOnce();
-    // 现有状态栏直接扫一遍，把已经建好的电池视图也挂上
-    if (gLabels == nil) gLabels = [[NSMutableArray alloc] init];
-    for (UIWindow *w in [[UIApplication sharedApplication] windows]) bt_scanRecursive(w);
-}
-
-#pragma mark - 构造函数
+#pragma mark - 通知回调
 static void btChangedNotifyCallback(CFNotificationCenterRef __unused center,
                                     void * __unused observer,
                                     CFStringRef __unused name,
                                     const void * __unused object,
                                     CFDictionaryRef __unused userInfo) {
-    dispatch_async(dispatch_get_main_queue(), ^{ bt_applyAll(); });
+    dispatch_async(dispatch_get_main_queue(), ^{ bt_tick(); });
 }
 
+#pragma mark - 构造函数
 __attribute__((constructor))
 static void btInit(void) {
     @autoreleasepool {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         btChangedNotifyCallback, kChangedCFName, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        // 轮询挂载：SpringBoard 启动后状态栏/电池视图逐步创建
         for (int i = 1; i <= 20; i++) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                bt_hookIfPossible();
+                if (!gHost) gHost = bt_findHost();
+                if (!gHost) return;
+                if (!gBattery) gBattery = bt_scanView(gHost);
+                bt_ensureLabel();
+                if (gLabel) bt_position();
+                bt_startTimer();
             });
         }
     }
-    NSLog(@"[电池温度] dylib 已注入 SpringBoard (iOS16 / rootless / 状态栏电池下方)");
+    NSLog(@"[电池温度] dylib 已注入 SpringBoard (iOS16 / rootless / 状态栏电池下叠加标签)");
 }
