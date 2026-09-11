@@ -246,7 +246,8 @@ static void btChangedCallback(int token) {
 __attribute__((constructor))
 static void btInit(void) {
     @autoreleasepool {
-        notify_register_dispatch(kChangedName, &(int){0}, dispatch_get_main_queue(), ^(int token){
+        static int gNotifyToken = 0;
+        notify_register_dispatch(kChangedName, &gNotifyToken, dispatch_get_main_queue(), ^(int token){
             btChangedCallback(token);
         });
         // 轮询挂载：SpringBoard 启动后状态栏/电池视图逐步创建
