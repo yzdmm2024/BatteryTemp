@@ -13,7 +13,6 @@ TWEAK_NAME = BatteryTemp
 BatteryTemp_FILES = src/Tweak.xm
 BatteryTemp_CFLAGS = -fobjc-arc -fobjc-exceptions -Wno-deprecated-declarations -w
 BatteryTemp_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics IOKit
-BatteryTemp_LDFLAGS = -lnotify
 
 # ===== 设置面板 PreferenceBundle =====
 BUNDLE_NAME = BatteryTempPrefs
@@ -23,7 +22,6 @@ BatteryTempPrefs_FRAMEWORKS = UIKit Foundation
 BatteryTempPrefs_PRIVATE_FRAMEWORKS = Preferences
 BatteryTempPrefs_LDFLAGS = -F$(TARGET_PRIVATE_FRAMEWORK_PATH)
 BatteryTempPrefs_CFLAGS = -fobjc-arc -fobjc-exceptions -w
-BatteryTempPrefs_LDFLAGS += -lnotify
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/bundle.mk

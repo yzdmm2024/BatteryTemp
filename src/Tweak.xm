@@ -9,7 +9,6 @@
 #import <QuartzCore/QuartzCore.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
-#import <notify.h>
 #import <mach/mach_port.h>
 
 #pragma mark - 偏好（与设置面板共享同一 suite）
@@ -20,7 +19,7 @@ static NSString *const kHOffset  = @"hOffset";    // 左右：水平偏移（+�
 static NSString *const kVOffset  = @"vOffset";    // 上下：垂直额外偏移（+下 -上）
 static NSString *const kFontSize = @"fontSize";   // 大小：文字字号
 
-static const char kChangedName[] = "com.yzdmm.batterytemp.changed";
+static CFStringRef kChangedCFName = CFSTR("com.yzdmm.batterytemp.changed");
 
 static BOOL btBool(NSString *key, BOOL def) {
     NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:PS_DOMAIN];
@@ -239,17 +238,20 @@ static void bt_hookIfPossible(void) {
 }
 
 #pragma mark - 构造函数
-static void btChangedCallback(int token) {
+static void btChangedNotifyCallback(CFNotificationCenterRef __unused center,
+                                    void * __unused observer,
+                                    CFStringRef __unused name,
+                                    const void * __unused object,
+                                    CFDictionaryRef __unused userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{ bt_applyAll(); });
 }
 
 __attribute__((constructor))
 static void btInit(void) {
     @autoreleasepool {
-        static int gNotifyToken = 0;
-        notify_register_dispatch(kChangedName, &gNotifyToken, dispatch_get_main_queue(), ^(int token){
-            btChangedCallback(token);
-        });
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
+                                        btChangedNotifyCallback, kChangedCFName, NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
         // 轮询挂载：SpringBoard 启动后状态栏/电池视图逐步创建
         for (int i = 1; i <= 20; i++) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
