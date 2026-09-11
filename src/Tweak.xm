@@ -81,10 +81,13 @@ static int gTimerStarted = 0;
 static void bt_startTimer(void);
 
 static UIView *bt_findHost(void) {
-    for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+    UIApplication *app = [UIApplication sharedApplication];
+    UIWindow *kw = app.keyWindow;                 // 前台窗口，最可靠
+    if (kw) return kw;
+    for (UIWindow *w in [app windows]) {
         if (w.rootViewController) return w;
     }
-    return [[[UIApplication sharedApplication] windows] firstObject];
+    return [[app windows] firstObject];
 }
 
 static BOOL bt_isBatteryView(UIView *v) {
@@ -166,7 +169,15 @@ static void bt_tick(void) {
         if (gLabel) { [gLabel removeFromSuperview]; gLabel = nil; }
         return;
     }
-    if (!gHost) gHost = bt_findHost();
+    // 每次都重找前台窗口：SpringBoard 启动初期窗口可能还没有，之后才陆续出现
+    UIView *host = bt_findHost();
+    if (!host) return;
+    if (host != gHost) gHost = host;               // 换了前台窗口就换宿主
+    if (gLabel && [gLabel window] != gHost) {
+        [gLabel removeFromSuperview];
+        [gHost addSubview:gLabel];
+        [gHost bringSubviewToFront:gLabel];
+    }
     if (!gBattery && gHost) gBattery = bt_scanView(gHost);
     bt_ensureLabel();
     if (gLabel) bt_position();
@@ -197,16 +208,11 @@ static void btInit(void) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         btChangedNotifyCallback, kChangedCFName, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        for (int i = 1; i <= 20; i++) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!gHost) gHost = bt_findHost();
-                if (!gHost) return;
-                if (!gBattery) gBattery = bt_scanView(gHost);
-                bt_ensureLabel();
-                if (gLabel) bt_position();
-                bt_startTimer();
-            });
-        }
+        // 延迟 1.5s 后无条件启动自我修复定时器；每 2s 重试找窗口/吸附/刷新，
+        // 即使 SpringBoard 启动初期窗口还没创建，只要窗口一出现就会显示。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            bt_startTimer();
+        });
     }
     NSLog(@"[电池温度] dylib 已注入 SpringBoard (iOS16 / rootless / 状态栏电池下叠加标签)");
 }

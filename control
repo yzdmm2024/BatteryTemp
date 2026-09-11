@@ -1,6 +1,6 @@
 Package: com.yzdmm.batterytemp
 Name: 电池温度
-Version: 1.1.4
+Version: 1.1.5
 Architecture: iphoneos-arm64
 Depends: mobilesubstrate, preferenceloader, firmware (>= 16.0)
 Maintainer: yzdmm
