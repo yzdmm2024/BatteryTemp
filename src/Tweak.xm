@@ -165,31 +165,50 @@ static void btApplyForVC(id self) {
     else bt_removeLabel(vc);
 }
 
-#pragma mark - Logos 挂钩（必须在 BatteryUsageUI.bundle 加载后才 %init）
-%group Hooks
-
-%hook BatteryUIController
-
-%new
-- (void)btHandleDrag:(UIPanGestureRecognizer *)pan {
-    bt_onDrag(pan, self);
-}
-
-- (void)viewDidLoad {
-    %orig;
+#pragma mark - Runtime 挂钩（替代 Logos %group：BatteryUIController 在 BatteryUsageUI.bundle 惰性加载，
+// 必须等 bundle 加载后手动 swizzle。Logos 的 %init 不允许在 C 函数/GCD 块里调用，故用原生 runtime。）
+static IMP bt_orig_viewDidLoad = NULL;
+static void bt_viewDidLoad(id self, SEL _cmd) {
+    if (bt_orig_viewDidLoad)
+        ((void (*)(id, SEL))bt_orig_viewDidLoad)(self, _cmd);
     if (@available(iOS 13.0, *)) {
         bt_ensureTempLabel(self);
     }
 }
 
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
+static IMP bt_orig_viewWillAppear = NULL;
+static void bt_viewWillAppear(id self, SEL _cmd, BOOL animated) {
+    if (bt_orig_viewWillAppear)
+        ((void (*)(id, SEL, BOOL))bt_orig_viewWillAppear)(self, _cmd, animated);
     btApplyForVC(self);   // 每次进入页面：按开关增/删，位置读默认锚点或上次拖动结果
 }
 
-%end
+static void bt_handleDrag(id self, SEL _cmd, UIPanGestureRecognizer *pan) {
+    bt_onDrag(pan, self);
+}
 
-%end
+static void bt_realHook(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = objc_getClass("BatteryUIController");
+        if (!cls) return;
+
+        // %new：补上拖动手势方法（原类没有 → class_addMethod）
+        class_addMethod(cls, sel_registerName("btHandleDrag:"), (IMP)bt_handleDrag, "v@:@");
+
+        // 替换 viewDidLoad / viewWillAppear:
+        Method m1 = class_getInstanceMethod(cls, @selector(viewDidLoad));
+        if (m1) { bt_orig_viewDidLoad = method_getImplementation(m1); method_setImplementation(m1, (IMP)bt_viewDidLoad); }
+        Method m2 = class_getInstanceMethod(cls, @selector(viewWillAppear:));
+        if (m2) { bt_orig_viewWillAppear = method_getImplementation(m2); method_setImplementation(m2, (IMP)bt_viewWillAppear); }
+
+        NSLog(@"[电池温度] 已挂钩 BatteryUIController (runtime swizzle)");
+    });
+}
+
+static void btTryHook(void) {
+    if (objc_getClass("BatteryUIController")) bt_realHook();
+}
 
 #pragma mark - 构造函数
 static void btBundleLoaded(CFNotificationCenterRef __unused center,
@@ -197,25 +216,24 @@ static void btBundleLoaded(CFNotificationCenterRef __unused center,
                            CFStringRef __unused name,
                            const void * __unused object,
                            CFDictionaryRef __unused userInfo) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if (objc_getClass("BatteryUIController")) {
-            %init(Hooks);
-        }
-    });
+    btTryHook();
 }
 
-%ctor {
+__attribute__((constructor))
+static void btInit(void) {
     @autoreleasepool {
         // 1) BatteryUIController 在 BatteryUsageUI.bundle 惰性加载 → 监听它加载后再挂钩
-        CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
-                                        btBundleLoaded, CFSTR("NSBundleDidLoadNotification"),
-                                        (__bridge CFBundleRef)[NSBundle bundleWithPath:@"/System/Library/PreferenceBundles/BatteryUsageUI.bundle"],
-                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        NSBundle *bundle = [NSBundle bundleWithPath:@"/System/Library/PreferenceBundles/BatteryUsageUI.bundle"];
+        if (bundle) {
+            CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
+                                            btBundleLoaded, CFSTR("NSBundleDidLoadNotification"),
+                                            (__bridge CFBundleRef)bundle,
+                                            CFNotificationSuspensionBehaviorDeliverImmediately);
+        }
         // 2) 兜底：延迟轮询几次（bundle 若已被缓存/别的 bundle 覆盖）
         for (int i = 1; i <= 5; i++) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (objc_getClass("BatteryUIController")) %init(Hooks);
+                btTryHook();
             });
         }
     }
