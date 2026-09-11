@@ -1,1 +1,32 @@
-«mz¼“zjk¢‹ezË>ˆäµëÿÿr‰š¦™^>·Ÿz·§qëjÛ^¯%,j”!»§vW¢+S„N*a¢wœ•©à×uã@t
+# ============ BatteryTempï¼šrootless ç”µæ± æ¸©åº¦æ˜¾ç¤º + è®¾ç½®é¢æ¿ ============
+# iOS 16ã€Œè®¾ç½® â†’ ç”µæ± ã€ï¼šåœ¨ç”µæ± å›¾æ ‡ä¸‹æ–¹/é¡µé¢åº•éƒ¨å®æ—¶æ˜¾ç¤ºæ¸©åº¦/ç”µå‹/å¾ªç¯ï¼Œæ ‡ç­¾å¯æ‹–åŠ¨ã€‚
+# æ³¨å…¥ com.apple.Preferencesï¼ˆBatteryUsageUI.bundle åŠ è½½åæ‰ %init æŒ‚é’©ï¼‰ã€‚
+
+TARGET := iphone:clang:14.5:14.0
+ARCHS = arm64 arm64e
+THEOS_PACKAGE_SCHEME = rootless
+INSTALL_TARGET_PROCESSES = Preferences
+
+include $(THEOS)/makefiles/common.mk
+
+# ===== Tweak æœ¬ä½“ =====
+TWEAK_NAME = BatteryTemp
+BatteryTemp_FILES = src/Tweak.xm
+BatteryTemp_CFLAGS = -fobjc-arc -fobjc-exceptions -Wno-deprecated-declarations -w
+BatteryTemp_FRAMEWORKS = UIKit Foundation QuartzCore CoreGraphics
+BatteryTemp_LDFLAGS_THEOS = -undefined,dynamic_lookup
+
+# ===== è®¾ç½®é¢æ¿ PreferenceBundle =====
+BUNDLE_NAME = BatteryTempPrefs
+BatteryTempPrefs_FILES = Preferences/PSBatteryTempController.m
+BatteryTempPrefs_INSTALL_PATH = /Library/PreferenceBundles
+BatteryTempPrefs_FRAMEWORKS = UIKit Foundation
+BatteryTempPrefs_PRIVATE_FRAMEWORKS = Preferences
+BatteryTempPrefs_LDFLAGS = -F$(TARGET_PRIVATE_FRAMEWORK_PATH)
+BatteryTempPrefs_CFLAGS = -fobjc-arc -fobjc-exceptions -w
+
+include $(THEOS_MAKE_PATH)/tweak.mk
+include $(THEOS_MAKE_PATH)/bundle.mk
+
+after-install::
+	install.exec "killall -9 SpringBoard"

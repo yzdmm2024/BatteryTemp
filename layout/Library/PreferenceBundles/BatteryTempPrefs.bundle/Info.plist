@@ -1,1 +1,26 @@
-�ioz�"�
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>Chinese</string>
+	<key>CFBundleDisplayName</key>
+	<string>电池温度</string>
+	<key>CFBundleExecutable</key>
+	<string>BatteryTempPrefs</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.yzdmm.batterytemp.prefs</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>电池温度</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.1.0</string>
+	<key>NSPrincipalClass</key>
+	<string>PSBatteryTempController</string>
+</dict>
+</plist>

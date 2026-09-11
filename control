@@ -1,1 +1,9 @@
-=�$j��l�vi�j�^�+^��Z��^�Ȩ�]t�!�ל��ފ�h��,j���7�zwl����.n�kjש��ޭ��zZu�ߊ��j�
+Package: com.yzdmm.batterytemp
+Name: 电池温度
+Version: 1.1.0
+Architecture: iphoneos-arm64
+Depends: mobilesubstrate, preferenceloader, firmware (>= 16.0)
+Maintainer: yzdmm
+Author: yzdmm
+Section: Tweaks
+Description: 在「设置 → 电池」页面显示实时电池温度、电压、循环次数（换过第三方电池也能看真实读数）。温度文字可用手指拖动到任意位置并自动保存；设置面板提供开关、默认位置与一键重置。rootless 适配，iOS 16。

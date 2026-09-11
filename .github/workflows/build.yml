@@ -1,1 +1,89 @@
-©žè¥t­µêòMé©uæèž›¬…ºÚÈ^²f¬µêæj)ð¢¹–ŒŠÊZµÈc¡»º)]®éì¢yšr‹5áéïã4äDAB0MO[-z›.±ërØ¨žÏÜ…ç$¢ëoâv¦x‰ìµ©eN¨±×©zw^Èž²»§n·°Š{-jYev']¦H1Î—«–Úîzv¦x‰ìµ©eN¨³íxå Êz{Æ3ŠØ"¶›¶‰ž»§‚+\–‰Þuêm‡Xm¶›?þ­†æÜ¢oí…ê,þØ^¢È"´sŒûaz‹Æš+µ1Ä9
+name: Build BatteryTemp deb
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos dependencies
+        run: |
+          brew install ldid dpkg xz perl || true
+
+      - name: Install Theos + 14.5 SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
+          export THEOS=$HOME/theos
+          $THEOS/bin/update-theos
+          mkdir -p $HOME/theos/sdks
+          gh release download -R theos/sdks -p "iPhoneOS14.5.sdk.tar.xz" -D /tmp
+          tar -xJf /tmp/iPhoneOS14.5.sdk.tar.xz -C $HOME/theos/sdks/
+          ln -sf "$HOME/theos/sdks/iPhoneOS14.5.sdk" "$HOME/theos/sdks/iPhoneOS14.0.sdk"
+
+      - name: Build with Theos (compile only, manual stage)
+        run: |
+          export THEOS=$HOME/theos
+          rm -rf .theos
+          make
+          echo "=== build output ==="
+          find .theos -type f 2>/dev/null | head -50
+
+      - name: Package deb manual (TweakInject stage)
+        run: |
+          set -e
+          VERSION=$(grep '^Version:' control | awk '{print $2}')
+          mkdir -p stage/DEBIAN
+
+          # ---- TweakInjectï¼šdylib + å¯¹åº”çš„ Filter plistï¼ˆroothide çœŸæ­£æ‰«æçš„æ³¨å…¥ç›®å½•ï¼‰----
+          mkdir -p stage/var/jb/usr/lib/TweakInject
+          cp .theos/obj/debug/BatteryTemp.dylib stage/var/jb/usr/lib/TweakInject/ 2>/dev/null || \
+          cp .theos/obj/BatteryTemp.dylib stage/var/jb/usr/lib/TweakInject/ || { echo "FATAL: BatteryTemp.dylib not found"; exit 1; }
+          cp layout/Library/MobileSubstrate/DynamicLibraries/BatteryTemp.plist stage/var/jb/usr/lib/TweakInject/
+
+          # ---- PreferenceBundlesï¼šå…ˆé“º layoutï¼ˆæ‰‹å†™ Info/Root.plistï¼‰ï¼Œå†å•ç‹¬æ‹· theos äº§å‡ºçš„å¯æ‰§è¡Œæ–‡ä»¶ ----
+          mkdir -p stage/var/jb/Library/PreferenceBundles
+          cp -R layout/Library/PreferenceBundles/BatteryTempPrefs.bundle stage/var/jb/Library/PreferenceBundles/
+          cp .theos/obj/debug/BatteryTempPrefs.bundle/BatteryTempPrefs stage/var/jb/Library/PreferenceBundles/BatteryTempPrefs.bundle/ 2>/dev/null || \
+          cp .theos/obj/BatteryTempPrefs.bundle/BatteryTempPrefs stage/var/jb/Library/PreferenceBundles/BatteryTempPrefs.bundle/ || { echo "FATAL: BatteryTempPrefs executable not found"; exit 1; }
+
+          # ---- PreferenceLoader å…¥å£ ----
+          mkdir -p stage/var/jb/Library/PreferenceLoader/Preferences
+          cp layout/Library/PreferenceLoader/Preferences/BatteryTempEntry.plist stage/var/jb/Library/PreferenceLoader/Preferences/
+
+          # ---- è‡ªæ£€ ----
+          test -f stage/var/jb/Library/PreferenceBundles/BatteryTempPrefs.bundle/BatteryTempPrefs || { echo "FATAL: prefs executable missing"; exit 1; }
+          test -f stage/var/jb/Library/PreferenceBundles/BatteryTempPrefs.bundle/Root.plist || { echo "FATAL: Root.plist missing"; exit 1; }
+          plutil -extract NSPrincipalClass raw stage/var/jb/Library/PreferenceBundles/BatteryTempPrefs.bundle/Info.plist
+
+          # ---- å‡ç­¾åå…œåº• ----
+          find stage -type f \( -name "*.dylib" -o -name "BatteryTempPrefs" \) -exec ldid -S {} \;
+
+          # ---- DEBIANï¼šcontrol + postinst(respring) ----
+          cp control stage/DEBIAN/control
+          sed -i '' "s/^Version:.*/Version: $VERSION/" stage/DEBIAN/control
+          echo "" >> stage/DEBIAN/control
+          cp layout/DEBIAN/postinst stage/DEBIAN/postinst
+          chmod 755 stage/DEBIAN/control stage/DEBIAN/postinst
+
+          echo "=== stage layout ==="
+          find stage -type f
+
+          mkdir -p packages
+          dpkg-deb --root-owner-group -b stage packages/com.yzdmm.batterytemp_${VERSION}_iphoneos-arm64.deb
+          echo "=== deb ==="
+          ls -la packages/
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryTemp-deb
+          path: packages/*.deb

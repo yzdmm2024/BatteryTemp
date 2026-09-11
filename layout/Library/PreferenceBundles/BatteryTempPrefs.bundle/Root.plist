@@ -1,1 +1,75 @@
-�ioz�"�
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>title</key>
+	<string>电池温度</string>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>显示</string>
+			<key>footerText</key>
+			<string>在「设置 → 电池」页面显示实时电池温度（°C）、电压、循环次数，每 3 秒刷新。换过第三方电池、系统隐藏温度时也能看真实读数。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.yzdmm.batterytemp</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>启用温度显示</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>位置</string>
+			<key>footerText</key>
+			<string>默认位置：电池正下方（顶部）或页面底部。进入电池页面后，可以用手指直接拖动温度文字到任意位置，松手自动保存。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSMultiValueCell</string>
+			<key>default</key>
+			<integer>0</integer>
+			<key>defaults</key>
+			<string>com.yzdmm.batterytemp</string>
+			<key>key</key>
+			<string>anchor</string>
+			<key>label</key>
+			<string>默认位置</string>
+			<key>validValues</key>
+			<array>
+				<integer>0</integer>
+				<integer>1</integer>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>电池正下方</string>
+				<string>页面底部</string>
+			</array>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>操作</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>重置到电池正下方</string>
+			<key>action</key>
+			<string>resetPosition</string>
+		</dict>
+	</array>
+</dict>
+</plist>

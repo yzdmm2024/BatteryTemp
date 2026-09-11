@@ -1,1 +1,25 @@
-Šjh®Óëy÷«zw³óëy÷«zw²ÿˆä¿şÊ^r'âz»¢‹i–+-Š{^­öœxôjÛ^¯$Şš¨Úè–W«="â²Ğ¨Úè–W«zwbš™^™éíjØ¨œôjÛ^¯$Şš¨Úè–W«‰Û)yÈŸ‰êì‰û)yÈŸ‰êì²—œ‰ø®
+#import <Preferences/Preferences.h>
+
+// è®¾ç½®é¢æ¿ä¸»æ§åˆ¶å™¨ï¼šiOS è®¾ç½® â†’ ç”µæ± æ¸©åº¦
+// å…³é”®ï¼šå¿…é¡»é‡å†™ specifiers å»è¯» Root.plistï¼Œå¦åˆ™é¢æ¿ç©ºç™½ã€‚
+@interface PSBatteryTempController : PSListController
+@end
+
+@implementation PSBatteryTempController
+
+- (id)specifiers {
+    if (!_specifiers) {
+        _specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
+    }
+    return _specifiers;
+}
+
+// â€œé‡ç½®åˆ°ç”µæ± æ­£ä¸‹æ–¹â€ï¼šæ¸…æ‰æ‹–åŠ¨ä¿å­˜çš„ä½ç½®ï¼Œå›åˆ°é»˜è®¤é”šç‚¹
+- (void)resetPosition {
+    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.yzdmm.batterytemp"];
+    [d removeObjectForKey:@"centerX"];
+    [d removeObjectForKey:@"centerY"];
+    [d synchronize];
+}
+
+@end

@@ -1,1 +1,11 @@
-N¨±»¢•Ú.¶›­¶¨³úZrF zÏİy·i’Ë¡Æ¥¢yrÿğÄ€ı»¢•Ùhq©l„4’¶ŠŞ
+# Theos build output
+.theos/
+packages/
+*.deb
+dpkg/
+# Local only
+æ„å»ºä¸­é—´/
+è¾“å‡ºæˆå“/
+DEBIAN/
+build_local.sh
+.DS_Store
