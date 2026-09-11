@@ -11,7 +11,9 @@
 #import <objc/runtime.h>
 #import <mach/mach_port.h>
 
-#pragma mark - 偏好（与设置面板共享同一 suite）
+#pragma mark - 偏好（直接读全局 plist，避免 App 沙盒下跨进程读不到）
+// 设置面板(Preferences 进程)通过 NSUserDefaults suite 写入 /var/mobile/Library/Preferences/com.yzdmm.batterytemp.plist
+// 普通 App 在沙盒里 initWithSuiteName 只能读自己的容器，故这里直接读全路径文件，天然拿到最新值。
 static NSString *const kEnabled  = @"enabled";    // 开关
 static NSString *const kVGap     = @"vGap";       // 高度
 static NSString *const kHOffset  = @"hOffset";    // 左右
@@ -20,14 +22,18 @@ static NSString *const kFontSize = @"fontSize";   // 大小
 
 static CFStringRef kChangedCFName = CFSTR("com.yzdmm.batterytemp.changed");
 
+static NSString *bt_prefsPath(void) {
+    return @"/var/mobile/Library/Preferences/com.yzdmm.batterytemp.plist";
+}
+
 static BOOL btBool(NSString *key, BOOL def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.yzdmm.batterytemp"];
-    id v = [d objectForKey:key];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:bt_prefsPath()];
+    id v = d ? d[key] : nil;
     return v ? [v boolValue] : def;
 }
 static double btDouble(NSString *key, double def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:@"com.yzdmm.batterytemp"];
-    id v = [d objectForKey:key];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:bt_prefsPath()];
+    id v = d ? d[key] : nil;
     return v ? [v doubleValue] : def;
 }
 
@@ -80,14 +86,18 @@ static __weak UIView *gBattery = nil;      // 找到的电池视图（weak，不
 static int gTimerStarted = 0;
 static void bt_startTimer(void);
 
+static UIView *bt_scanView(UIView *v);
+
 static UIView *bt_findHost(void) {
     UIApplication *app = [UIApplication sharedApplication];
-    UIWindow *kw = app.keyWindow;                 // 前台窗口，最可靠
-    if (kw) return kw;
+    // 优先找含状态栏电池视图的窗口：普通 App 的状态栏是独立 _UIStatusBarWindow，
+    // 不吸附它的话标签会落到空白右上角。找不到再回退到前台 keyWindow。
     for (UIWindow *w in [app windows]) {
-        if (w.rootViewController) return w;
+        if (bt_scanView(w)) return w;
     }
-    return [[app windows] firstObject];
+    UIWindow *kw = app.keyWindow;
+    if (kw) return kw;
+    return [app.windows firstObject];
 }
 
 static BOOL bt_isBatteryView(UIView *v) {
@@ -121,11 +131,11 @@ static void bt_ensureLabel(void) {
     UILabel *l = [[UILabel alloc] init];
     l.textAlignment = NSTextAlignmentCenter;
     l.textColor = [UIColor whiteColor];
-    l.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
-    l.layer.cornerRadius = 6.0;
-    l.layer.masksToBounds = YES;
-    l.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
-    l.layer.borderWidth = 0.5;
+    l.backgroundColor = [UIColor clearColor];              // 完全透明，不遮住后面内容
+    l.layer.shadowColor = [UIColor blackColor].CGColor;    // 文字阴影，浅色/白色界面也清晰可读
+    l.layer.shadowOpacity = 0.8f;
+    l.layer.shadowRadius = 1.0;
+    l.layer.shadowOffset = CGSizeMake(0, 0.5);
     l.layer.zPosition = 1000;
     l.userInteractionEnabled = NO;
     [gHost addSubview:l];
@@ -202,8 +212,18 @@ static void btChangedNotifyCallback(CFNotificationCenterRef __unused center,
 }
 
 #pragma mark - 构造函数
+// 只有真正带状态栏的 UI 进程才需要叠加标签：
+//   跳过系统 daemon（无 bundle id）与设置面板进程（它自己就是配置界面）。
+static BOOL bt_shouldInject(void) {
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (!bid) return NO;
+    if ([bid isEqualToString:@"com.apple.Preferences"]) return NO;
+    return YES;   // SpringBoard 与普通 App 都注入，实现“贯穿”显示
+}
+
 __attribute__((constructor))
 static void btInit(void) {
+    if (!bt_shouldInject()) return;
     @autoreleasepool {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         btChangedNotifyCallback, kChangedCFName, NULL,
@@ -214,5 +234,5 @@ static void btInit(void) {
             bt_startTimer();
         });
     }
-    NSLog(@"[电池温度] dylib 已注入 SpringBoard (iOS16 / rootless / 状态栏电池下叠加标签)");
+    NSLog(@"[电池温度] dylib 注入 UI 进程 (iOS16 / rootless / 状态栏电池下叠加透明标签, 贯穿显示)");
 }
