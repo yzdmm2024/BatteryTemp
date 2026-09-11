@@ -163,8 +163,10 @@ static void bt_ensureTempLabel(id self) {
 
 static void btApplyForVC(id self) {
     UIViewController *vc = (UIViewController *)self;
-    if (btBool(kEnabled, YES)) bt_ensureTempLabel(vc);
-    else bt_removeLabel(vc);
+    if (btBool(kEnabled, YES)) {
+        bt_ensureTempLabel(vc);          // 没有就创建（含拖动手势+定时器）
+        bt_refreshTemp(vc);              // 已存在则重排位置/刷新文字（含有效的 bounds）
+    } else bt_removeLabel(vc);
 }
 
 #pragma mark - Runtime 挂钩（替代 Logos %group：BatteryUIController 在 BatteryUsageUI.bundle 惰性加载，
@@ -185,6 +187,22 @@ static void bt_viewWillAppear(id self, SEL _cmd, BOOL animated) {
     btApplyForVC(self);   // 每次进入页面：按开关增/删，位置读默认锚点或上次拖动结果
 }
 
+// 布局阶段再定位：viewDidLoad 里 bounds 常为 0(0,0)，label 会被 bt_layOut 早期 return 卡在左上角。
+// viewDidLayoutSubviews 每次拿到有效尺寸，确保温度条立刻显示在正确位置（旋转/首次布局都覆盖）。
+static IMP bt_orig_DidLayout = NULL;
+static void bt_viewDidLayoutSubviews(id self, SEL _cmd) {
+    if (bt_orig_DidLayout)
+        ((void (*)(id, SEL))bt_orig_DidLayout)(self, _cmd);
+    btApplyForVC(self);
+}
+
+static IMP bt_orig_DidAppear = NULL;
+static void bt_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+    if (bt_orig_DidAppear)
+        ((void (*)(id, SEL, BOOL))bt_orig_DidAppear)(self, _cmd, animated);
+    btApplyForVC(self);
+}
+
 static void bt_handleDrag(id self, SEL _cmd, UIPanGestureRecognizer *pan) {
     bt_onDrag(pan, self);
 }
@@ -203,6 +221,11 @@ static void bt_realHook(void) {
         if (m1) { bt_orig_viewDidLoad = method_getImplementation(m1); method_setImplementation(m1, (IMP)bt_viewDidLoad); }
         Method m2 = class_getInstanceMethod(cls, @selector(viewWillAppear:));
         if (m2) { bt_orig_viewWillAppear = method_getImplementation(m2); method_setImplementation(m2, (IMP)bt_viewWillAppear); }
+        // 布局/出现后再定位（修复 viewDidLoad 时 bounds=0 导致 label 卡左上角的问题）
+        Method m3 = class_getInstanceMethod(cls, @selector(viewDidLayoutSubviews));
+        if (m3) { bt_orig_DidLayout = method_getImplementation(m3); method_setImplementation(m3, (IMP)bt_viewDidLayoutSubviews); }
+        Method m4 = class_getInstanceMethod(cls, @selector(viewDidAppear:));
+        if (m4) { bt_orig_DidAppear = method_getImplementation(m4); method_setImplementation(m4, (IMP)bt_viewDidAppear); }
 
         NSLog(@"[电池温度] 已挂钩 BatteryUIController (runtime swizzle)");
     });
