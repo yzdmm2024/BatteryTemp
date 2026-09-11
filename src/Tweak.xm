@@ -157,7 +157,7 @@ static void bt_position(void) {
     if (!gLabel) bt_ensureLabel();
     if (!gLabel || !gHost) return;
     CGRect r = bt_batteryRect();
-    double size = MAX(btDouble(kFontSize, 13), 8);
+    double size = MAX(btDouble(kFontSize, 10), 5);   // 默认接近状态栏小字，最小 5
     gLabel.font = [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightMedium];
     gLabel.text = bt_composeText();
     [gLabel sizeToFit];
@@ -179,24 +179,36 @@ static void bt_tick(void) {
         if (gLabel) { [gLabel removeFromSuperview]; gLabel = nil; }
         return;
     }
-    // 每次都重找前台窗口：SpringBoard 启动初期窗口可能还没有，之后才陆续出现
-    UIView *host = bt_findHost();
-    if (!host) return;
-    if (host != gHost) gHost = host;               // 换了前台窗口就换宿主
+    UIApplication *app = [UIApplication sharedApplication];
+    // 宿主=含状态栏电池的窗口，属于“状态栏”层，滑app/转场时一直存在，常驻不消失。
+    // 找到一次后尽量复用；只有它失效(不在窗口列表)才重新找，避免跟着 keyWindow 跳来跳去。
+    BOOL hostAlive = gHost && [[app windows] containsObject:(UIWindow*)gHost];
+    if (!hostAlive) {
+        UIView *nb = nil, *nw = nil;
+        for (UIWindow *w in [app windows]) {
+            UIView *f = bt_scanView(w);
+            if (f) { nw = w; nb = f; break; }
+        }
+        if (nw) { gHost = nw; gBattery = nb; }
+        else   { gBattery = nil; gHost = app.keyWindow ?: [app.windows firstObject]; }
+    } else if (!gBattery || ![gBattery window]) {
+        gBattery = bt_scanView(gHost);   // 宿主还在但电池视图被重建了，重新扫
+    }
+    if (!gHost) return;
+    bt_ensureLabel();
     if (gLabel && [gLabel window] != gHost) {
         [gLabel removeFromSuperview];
         [gHost addSubview:gLabel];
         [gHost bringSubviewToFront:gLabel];
     }
-    if (!gBattery && gHost) gBattery = bt_scanView(gHost);
-    bt_ensureLabel();
     if (gLabel) bt_position();
 }
 
 static void bt_startTimer(void) {
     if (gTimerStarted) return;
     gTimerStarted = 1;
-    [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *t){
+    // 高频自愈：状态栏一出现就能立刻吸附上，切换 App 时基本无感
+    [NSTimer scheduledTimerWithTimeInterval:0.6 repeats:YES block:^(NSTimer *t){
         dispatch_async(dispatch_get_main_queue(), ^{ bt_tick(); });
     }];
     bt_tick();
@@ -228,11 +240,7 @@ static void btInit(void) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
                                         btChangedNotifyCallback, kChangedCFName, NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
-        // 延迟 1.5s 后无条件启动自我修复定时器；每 2s 重试找窗口/吸附/刷新，
-        // 即使 SpringBoard 启动初期窗口还没创建，只要窗口一出现就会显示。
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            bt_startTimer();
-        });
+        bt_startTimer();   // 注入立即启动自愈定时器，状态栏一出现就吸附，切换时无延迟
     }
-    NSLog(@"[电池温度] dylib 注入 UI 进程 (iOS16 / rootless / 状态栏电池下叠加透明标签, 贯穿显示)");
+    NSLog(@"[电池温度] dylib 注入 UI 进程 (iOS16 / rootless / 状态栏电池下常驻透明小字, 贯穿显示)");
 }

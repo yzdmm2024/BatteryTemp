@@ -50,10 +50,10 @@ static void btNotify(void) {
     self.title = @"电池温度";
 
     _steppers = @[
-        @{@"title":@"温度 高度", @"key":@"vGap",     @"def":@8,  @"min":@0,  @"max":@40, @"step":@1},
-        @{@"title":@"温度 左右", @"key":@"hOffset",  @"def":@0,  @"min":@-80,@"max":@80, @"step":@1},
-        @{@"title":@"温度 上下", @"key":@"vOffset",  @"def":@0,  @"min":@-20,@"max":@80, @"step":@1},
-        @{@"title":@"温度 大小", @"key":@"fontSize", @"def":@13, @"min":@8,  @"max":@40, @"step":@1},
+        @{@"title":@"温度 高度", @"key":@"vGap",     @"def":@6,  @"min":@0,  @"max":@60, @"step":@2},
+        @{@"title":@"温度 左右", @"key":@"hOffset",  @"def":@0,  @"min":@-120,@"max":@120, @"step":@4},
+        @{@"title":@"温度 上下", @"key":@"vOffset",  @"def":@0,  @"min":@-60,@"max":@120, @"step":@4},
+        @{@"title":@"温度 大小", @"key":@"fontSize", @"def":@10, @"min":@5,  @"max":@40, @"step":@1},
     ];
     _stepperMap = [NSMutableDictionary dictionary];
     for (int i = 0; i < _steppers.count; i++) {
