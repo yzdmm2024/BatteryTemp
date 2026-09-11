@@ -5,6 +5,12 @@
 	<key>Module</key>
 	<string>SpringBoard</string>
 	<key>Filter</key>
-	<dict/>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>*</string>
+			<string>com.apple.springboard</string>
+		</array>
+	</dict>
 </dict>
 </plist>
