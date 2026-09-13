@@ -2,37 +2,19 @@
 #import <UIKit/UIKit.h>
 #import <Preferences/Preferences.h>
 
-// 电池温度设置面板 — 纯代码布局，不依赖 PSStepperCell（部分 iOS 不识别会退成空行）。
-// 开关用 UISwitch，四项调节用原生 UIStepper（自带 - / +），实时写入偏好并广播给 SpringBoard。
+// 电池温度设置面板 —— 无状态栏浮层，纯面板内显示。
+// 点开本面板 → 发 Darwin 通知让插件（SpringBoard）开始读数；
+// 退出本面板 / 设置 App 退后台 → 发通知让插件停止读数（静默、不耗电）。
+// 数据由插件写入共享 plist，本面板每 1 秒读取刷新。
 
-static NSString *const kDomain  = @"com.yzdmm.batterytemp";
-static NSString *const kEnabled = @"enabled";
-static NSString *const kChanged = @"com.yzdmm.batterytemp.changed";
+// 与 Tweak.xm 里 bt_livePath() 保持一致
+static NSString *bt_livePath(void) {
+    return @"/var/mobile/Library/Preferences/com.yzdmm.batterytemp.live.plist";
+}
 
-static double btDouble(NSString *key, double def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kDomain];
-    id v = [d objectForKey:key];
-    return v ? [v doubleValue] : def;
-}
-static void btSetDouble(NSString *key, double val) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kDomain];
-    [d setDouble:val forKey:key];
-    [d synchronize];
-}
-static BOOL btBool(NSString *key, BOOL def) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kDomain];
-    id v = [d objectForKey:key];
-    return v ? [v boolValue] : def;
-}
-static void btSetBool(NSString *key, BOOL val) {
-    NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:kDomain];
-    [d setBool:val forKey:key];
-    [d synchronize];
-}
-static void btNotify(void) {
+static void btPost(NSString *name) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                         CFSTR("com.yzdmm.batterytemp.changed"),
-                                         NULL, NULL, true);
+                                         (__bridge CFStringRef)name, NULL, NULL, true);
 }
 
 @interface PSBatteryTempController : PSViewController <UITableViewDataSource, UITableViewDelegate>
@@ -40,25 +22,14 @@ static void btNotify(void) {
 
 @implementation PSBatteryTempController {
     UITableView *_table;
-    NSArray *_steppers;   // 每项: {title,key,def,min,max,step}
-    NSMutableDictionary *_stepperMap; // @(tag) -> key 字符串（UIStepper 根据 tag 定位 key）
-    NSMutableArray *_steppersView;
+    NSTimer *_timer;
+    NSDictionary *_live;   // 最近一次读取的实时数据
+    BOOL _observing;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"电池温度";
-
-    _steppers = @[
-        @{@"title":@"温度 高度", @"key":@"vGap",     @"def":@6,  @"min":@0,  @"max":@60, @"step":@2},
-        @{@"title":@"温度 左右", @"key":@"hOffset",  @"def":@0,  @"min":@-120,@"max":@120, @"step":@4},
-        @{@"title":@"温度 上下", @"key":@"vOffset",  @"def":@0,  @"min":@-60,@"max":@120, @"step":@4},
-        @{@"title":@"温度 大小", @"key":@"fontSize", @"def":@10, @"min":@5,  @"max":@40, @"step":@1},
-    ];
-    _stepperMap = [NSMutableDictionary dictionary];
-    for (int i = 0; i < _steppers.count; i++) {
-        _stepperMap[@(i + 1)] = _steppers[i][@"key"];
-    }
 
     CGRect b = self.view.bounds;
     _table = [[UITableView alloc] initWithFrame:CGRectMake(0, 0, b.size.width, b.size.height)
@@ -67,95 +38,104 @@ static void btNotify(void) {
     _table.dataSource = self;
     _table.delegate = self;
     [self.view addSubview:_table];
+
+    // 设置 App 退后台也静默：停止读数；回到前台且本面板仍可见则恢复
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(appDidEnterBackground)
+               name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(appWillEnterForeground)
+               name:UIApplicationWillEnterForegroundNotification object:nil];
+    _observing = YES;
 }
 
-#pragma mark - 兼容：Preferences 可能以不同方式实例化
-
-- (instancetype)initWithSpecifier:(PSSpecifier *)specifier {
-    return [super init];
-}
-- (void)setSpecifier:(PSSpecifier *)specifier {}
-- (void)setParentController:(UIViewController *)parentController {}
-
-#pragma mark - 事件
-
-- (void)enabledChanged:(UISwitch *)sw {
-    btSetBool(kEnabled, sw.on);
-    btNotify();
-}
-
-- (void)stepChanged:(UIStepper *)st {
-    NSString *key = _stepperMap[@(st.tag)];
-    if (!key) return;
-    btSetDouble(key, st.value);
-    // 刷新该行文字，显示最新数值
-    for (int i = 0; i < _steppers.count; i++) {
-        if ([_steppers[i][@"key"] isEqualToString:key]) {
-            NSIndexPath *ip = [NSIndexPath indexPathForRow:i inSection:1];
-            UITableViewCell *cell = [_table cellForRowAtIndexPath:ip];
-            cell.textLabel.text = [NSString stringWithFormat:@"%@  %@",
-                                   _steppers[i][@"title"], @(st.value)];
-            break;
-        }
+- (void)dealloc {
+    if (_observing) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
+        _observing = NO;
     }
-    btNotify();
-}
-
-#pragma mark - 数据源
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2;
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 1 : _steppers.count;
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0)
-        return @"在桌面/锁屏状态栏的电池图标正下方，实时显示电池温度（°C）与电压（V），每 2 秒刷新。换过电池、系统隐藏温度时也能看真实读数。";
-    return @"改动即时生效，回到桌面即可看到效果。用 - / + 微调显示高度、左右、上下与大小。";
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) {
-        UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"sw"];
-        if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"sw"];
-        c.textLabel.text = @"启用温度显示";
-        c.accessoryView = nil;
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.on = btBool(kEnabled, YES);
-        [sw addTarget:self action:@selector(enabledChanged:) forControlEvents:UIControlEventValueChanged];
-        c.accessoryView = sw;
-        return c;
-    }
-
-    NSInteger row = indexPath.row;
-    NSDictionary *conf = _steppers[row];
-    UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"st"];
-    if (c) c.accessoryView = nil;
-    if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"st"];
-
-    double val = btDouble(conf[@"key"], [conf[@"def"] doubleValue]);
-
-    UIStepper *st = (UIStepper *)c.accessoryView;
-    if (!st) {
-        st = [[UIStepper alloc] init];
-        [st addTarget:self action:@selector(stepChanged:) forControlEvents:UIControlEventValueChanged];
-        c.accessoryView = st;
-    }
-    st.tag = row + 1;
-    st.minimumValue = [conf[@"min"] doubleValue];
-    st.maximumValue = [conf[@"max"] doubleValue];
-    st.stepValue = [conf[@"step"] doubleValue];
-    st.value = val;
-    c.textLabel.text = [NSString stringWithFormat:@"%@  %@", conf[@"title"], @(val)];
-    return c;
+    btPost(@"com.yzdmm.batterytemp.close");
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    btPost(@"com.yzdmm.batterytemp.open");           // 让插件开始读
     [_table reloadData];
+    _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t){
+        [self refreshLive];
+    }];
+    [self refreshLive];
 }
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    btPost(@"com.yzdmm.batterytemp.close");          // 让插件停止读（静默）
+    [_timer invalidate]; _timer = nil;
+}
+
+- (void)appDidEnterBackground {
+    btPost(@"com.yzdmm.batterytemp.close");
+    [_timer invalidate]; _timer = nil;
+}
+- (void)appWillEnterForeground {
+    if (self.isViewLoaded && self.view.window) {
+        btPost(@"com.yzdmm.batterytemp.open");
+        _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t){
+            [self refreshLive];
+        }];
+        [self refreshLive];
+    }
+}
+
+- (void)refreshLive {
+    _live = [NSDictionary dictionaryWithContentsOfFile:bt_livePath()];
+    if ([_table numberOfSections] > 0) {
+        [_table reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    }
+}
+
+#pragma mark - 数据源
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 4; }
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    return @"数据来自电池管理芯片 AppleSmartBattery，是真实硬件读数（非估算、非假）。点开本面板才开始读取，退出即停止，不后台耗电。电池温度在空闲时长时间不变属正常；充电或运行大型 App 时会明显上升。电流正号=放电、负号=充电、0=空闲。";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray *titles = @[@"电池温度", @"电池电压", @"电池电流", @"充电循环"];
+    UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"lv"];
+    if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"lv"];
+    c.textLabel.text = titles[indexPath.row];
+    c.detailTextLabel.text = [self valueForRow:indexPath.row];
+    c.selectionStyle = UITableViewCellSelectionStyleNone;
+    if (indexPath.row == 0) {
+        c.detailTextLabel.font = [UIFont boldSystemFontOfSize:20];
+    }
+    return c;
+}
+
+- (NSString *)valueForRow:(NSInteger)row {
+    if (!_live) return @"读取中…";
+    if (row == 0) {
+        double t = [_live[@"temperatureC"] doubleValue];
+        return (t >= 0) ? [NSString stringWithFormat:@"%.1f °C", t] : @"--";
+    } else if (row == 1) {
+        double v = [_live[@"voltageV"] doubleValue];
+        return (v >= 0) ? [NSString stringWithFormat:@"%.3f V", v] : @"--";
+    } else if (row == 2) {
+        long long cur = [_live[@"currentMA"] longLongValue];
+        if (cur > 0)  return [NSString stringWithFormat:@"+%lld mA（放电）", cur];
+        if (cur < 0)  return [NSString stringWithFormat:@"%lld mA（充电）", -cur];
+        return @"0 mA（空闲）";
+    } else {
+        long long cyc = [_live[@"cycle"] longLongValue];
+        return (cyc > 0) ? [NSString stringWithFormat:@"%lld 次", cyc] : @"--";
+    }
+}
+
+#pragma mark - 兼容：Preferences 可能以不同方式实例化
+- (instancetype)initWithSpecifier:(PSSpecifier *)specifier { return [super init]; }
+- (void)setSpecifier:(PSSpecifier *)specifier {}
+- (void)setParentController:(UIViewController *)parentController {}
 
 @end

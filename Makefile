@@ -1,5 +1,6 @@
-# ============ BatteryTemp：rootless 桌面状态栏电池温度显示 + 设置面板 ============
-# 注入 com.apple.springboard：在状态栏电池图标正下方显示温度(/°C)/电压(V)，可调位置/字号。
+# ============ BatteryTemp：rootless 电池芯片真实温度/电压，面板内实时显示 ============
+# 仅注入 com.apple.springboard：读取 AppleSmartBattery 真实温度/电压/电流/循环，写入共享 plist，
+# 供「设置 → 电池温度」面板（独立进程）读取并实时显示。不再在状态栏绘制浮层。
 
 TARGET := iphone:clang:14.5:14.0
 ARCHS = arm64 arm64e
